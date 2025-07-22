@@ -15,17 +15,19 @@ import utils
 import mesh_to_sdf
 import skimage
 from panda_layer.panda_layer import PandaLayer
+from pointrobot_layer.pointrobot_layer_textured import PointRobotLayer
 import argparse
 
 CUR_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class BPSDF():
-    def __init__(self, n_func,domain_min,domain_max,robot,device):
+    def __init__(self, n_func,domain_min,domain_max,robot,device, robotname=None):
         self.n_func = n_func
         self.domain_min = domain_min
         self.domain_max = domain_max
         self.device = device    
         self.robot = robot
+        self.robotname = robotname
         self.model_path = os.path.join(CUR_DIR, 'models')
         
     def binomial_coefficient(self, n, k):
@@ -70,9 +72,9 @@ class BPSDF():
 
     def train_bf_sdf(self,epoches=200):
         # represent SDF using basis functions
-        mesh_path = os.path.join(CUR_DIR,"panda_layer/meshes/voxel_128/*")
+        mesh_path = os.path.join(CUR_DIR,"pointrobot_layer/meshes/*.stl")
         mesh_files = glob.glob(mesh_path)
-        mesh_files = sorted(mesh_files)[1:] #except finger
+        mesh_files = sorted(mesh_files)[0:] #except finger
         mesh_dict = {}
         for i,mf in enumerate(mesh_files):
             mesh_name = mf.split('/')[-1].split('.')[0]
@@ -118,8 +120,8 @@ class BPSDF():
             }
         if os.path.exists(self.model_path) is False:
             os.mkdir(self.model_path)
-        torch.save(mesh_dict,f'{self.model_path}/BP_{self.n_func}.pt') # save the robot sdf model
-        print(f'{self.model_path}/BP_{self.n_func}.pt model saved!')
+        torch.save(mesh_dict,f'{self.model_path}/BP_{self.n_func}_{self.robotname}.pt') # save the robot sdf model
+        print(f'{self.model_path}/BP_{self.n_func}_{self.robotname}.pt model saved!')
 
     def sdf_to_mesh(self, model, nbData,use_derivative=False):
         verts_list, faces_list, mesh_name_list = [], [], []
@@ -164,7 +166,7 @@ class BPSDF():
                     os.mkdir(save_path)
                 trimesh.exchange.export.export_mesh(rec_mesh, os.path.join(save_path,f"{save_mesh_name}_{mesh_name}.stl"))
 
-    def get_whole_body_sdf_batch(self,x,pose,theta,model,use_derivative = True, used_links = [0,1,2,3,4,5,6,7,8]):
+    def get_whole_body_sdf_batch(self,x,pose,theta,model,use_derivative = True, used_links = [0,1,2]):
 
         B = len(theta)
         N = len(x)
@@ -257,36 +259,40 @@ if __name__ =='__main__':
     parser.add_argument('--domain_max', default=1.0, type=float)
     parser.add_argument('--domain_min', default=-1.0, type=float)
     parser.add_argument('--n_func', default=8, type=int)
-    parser.add_argument('--train', action='store_true')
+    parser.add_argument('--robotname', default='pointrobot', type=str)
+    parser.add_argument('--train', default=1, type=bool) #action='store_true') #
     args = parser.parse_args()
 
-    panda = PandaLayer(args.device)
-    bp_sdf = BPSDF(args.n_func,args.domain_min,args.domain_max,panda,args.device)
+    if args.robotname == "panda":
+        robot = PandaLayer(args.device)
+    else:
+        robot = PointRobotLayer(args.device)
+    bp_sdf = BPSDF(args.n_func,args.domain_min,args.domain_max,robot,args.device, args.robotname)
     
     # #  train Bernstein Polynomial model   
     if args.train:
         bp_sdf.train_bf_sdf()
 
     # load trained model
-    model_path = f'models/BP_{args.n_func}.pt'
+    model_path = f'models/BP_{args.n_func}_{args.robotname}.pt'
     model = torch.load(model_path,weights_only=False)
     
     # visualize the Bernstein Polynomial model for each robot link
-    # bp_sdf.create_surface_mesh(model,nbData=128,vis=True,save_mesh_name=f'BP_{args.n_func}')
+    bp_sdf.create_surface_mesh(model,nbData=128,vis=True,save_mesh_name=f'BP_{args.n_func}_{args.robotname}')
 
     # visualize the Bernstein Polynomial model for the whole body
-    theta = torch.tensor([0, -0.3, 0, -2.2, 0, 2.0, np.pi/4]).float().to(args.device).reshape(-1,7)
+    theta = torch.tensor([0, -0.3]).float().to(args.device).reshape(-1,2)
     pose = torch.from_numpy(np.identity(4)).to(args.device).reshape(-1, 4, 4).expand(len(theta),4,4).float()
-    trans_list = panda.get_transformations_each_link(pose,theta)
-    utils.visualize_reconstructed_whole_body(model, trans_list, tag=f'BP_{args.n_func}_link')
+    trans_list = robot.get_transformations_each_link(pose,theta)
+    utils.visualize_reconstructed_whole_body(model, trans_list, tag=f'BP_{args.n_func}_{args.robotname}')
     
     # run RDF
     x = torch.rand(128,3).to(args.device)*2.0 - 1.0
-    theta = torch.rand(2,7).to(args.device).float()
+    theta = torch.rand(2,2).to(args.device).float()
     pose = torch.from_numpy(np.identity(4)).unsqueeze(0).to(args.device).expand(len(theta),4,4).float()
-    sdf,gradient = bp_sdf.get_whole_body_sdf_batch(x,pose,theta,model,use_derivative=True)
+    sdf,gradient = bp_sdf.get_whole_body_sdf_batch(x,pose,theta,model,use_derivative=True, used_links=[1])
     print('sdf:',sdf.shape,'gradient:',gradient.shape)
-    sdf,joint_grad = bp_sdf.get_whole_body_sdf_with_joints_grad_batch(x,pose,theta,model)
+    sdf,joint_grad = bp_sdf.get_whole_body_sdf_with_joints_grad_batch(x,pose,theta,model, used_links=[2], nr_joints=2)
     print('sdf:',sdf.shape,'joint gradient:',joint_grad.shape)
 
 
